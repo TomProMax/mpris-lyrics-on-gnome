@@ -209,26 +209,35 @@ systemctl --user restart mpris-lyrics.service
 
 ## 简繁显示
 
-默认根据系统语言自动处理：
+安装脚本默认把输出固定为简体（`simplified`），并写进 systemd 服务的
+`Environment=`，因此不会因为显示管理器给出的 `LANG`（例如 `en_US.UTF-8`）
+而变回繁体：
 
-- `zh_CN` / `zh_SG`：歌词和歌名显示为简体
-- `zh_TW` / `zh_HK` / `zh_MO`：保留歌词/歌名原文（通常为繁体）
-- 其他语言：保留原文
+- `simplified`：歌词和歌名显示为简体（安装脚本默认）
+- `traditional` / `original`：保留歌词/歌名原文（通常为繁体）
+- `auto`：按 locale 自动判断（`zh_CN` / `zh_SG` → 简体，
+  `zh_TW` / `zh_HK` / `zh_MO` → 原文）
 
-也可以手动指定：
+安装时可以覆盖这个默认值：
 
 ```sh
-# 强制简体
-MPRIS_LYRICS_CHINESE_SCRIPT=simplified
-
-# 保留歌词原文
-MPRIS_LYRICS_CHINESE_SCRIPT=original
+MPRIS_LYRICS_CHINESE_SCRIPT=auto ./install.sh
 ```
 
-写进 systemd：
+已经安装过的话，可以直接修改服务：
+
+```sh
+systemctl --user edit mpris-lyrics.service
+```
 
 ```ini
+[Service]
 Environment=MPRIS_LYRICS_CHINESE_SCRIPT=simplified
+```
+
+```sh
+systemctl --user daemon-reload
+systemctl --user restart mpris-lyrics.service
 ```
 
 ## 工作原理

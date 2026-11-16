@@ -207,8 +207,11 @@ AES 实现优先使用 Python 的 `cryptography`，没有时回退到系统 `ope
 - 顶栏扩展每 0.1 秒读取一次歌词文件，避免状态栏刷新造成 1 秒延迟。
 - 两次 MPRIS 轮询之间使用本地时间插值，保证歌词切换平滑。
 - 支持 `MPRIS_LYRICS_OFFSET_MS` 全局偏移；正数让歌词提前，负数让歌词延后。
-- 根据系统语言自动处理简繁：`zh_CN` / `zh_SG` 时歌词和歌名都显示简体；
-  可用 `MPRIS_LYRICS_CHINESE_SCRIPT=simplified|original` 覆盖。
+- 简繁显示：`MPRIS_LYRICS_CHINESE_SCRIPT=simplified|traditional|original|auto`
+  控制；安装脚本默认固定为 `simplified`，写进 systemd 服务的 `Environment=`，
+  避免显示管理器的 `en_US` LANG 让繁体歌词漏过转换。`auto` 会扫描全部
+  `LC_*` 变量，`zh_CN` / `zh_SG` 显示简体，`zh_TW` / `zh_HK` / `zh_MO`
+  保留原文。
 - 暂停：显示 `⏸ Paused`。
 - 停止：显示 `⏹ Stopped`。
 - 无播放器：显示 `⏹ No player`。

@@ -15,6 +15,10 @@ AUTOSTART_DIR="$HOME/.config/autostart"
 PIPE_PATH="${PIPE_PATH:-/tmp/mpris-lyrics}"
 # Optional: pin a specific MPRIS player, e.g. MPRIS_PLAYER=spotify
 MPRIS_PLAYER="${MPRIS_PLAYER:-}"
+# Chinese lyric script: simplified (default), traditional, original, or auto.
+# A systemd service can inherit an en_US LANG from the display manager, so
+# pin this explicitly instead of relying on locale detection.
+CHINESE_SCRIPT="${MPRIS_LYRICS_CHINESE_SCRIPT:-simplified}"
 
 PIPE_NAME="mpris-lyrics-pipe"
 SERVICE_NAME="mpris-lyrics.service"
@@ -276,6 +280,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
+Environment=MPRIS_LYRICS_CHINESE_SCRIPT=$CHINESE_SCRIPT
 ExecStart=$BIN_DIR/$PIPE_NAME $PIPE_PATH
 Restart=on-failure
 RestartSec=3
@@ -306,9 +311,11 @@ fi
 if [ "$USE_SYSTEMD" -eq 0 ]; then
     sed -e "s|/home/haku/.local|$PREFIX|g" \
         -e "s|/tmp/mpris-lyrics|$PIPE_PATH|g" \
+        -e "s|MPRIS_LYRICS_CHINESE_SCRIPT=simplified|MPRIS_LYRICS_CHINESE_SCRIPT=$CHINESE_SCRIPT|g" \
         "$(dirname "$0")/mpris-lyrics.desktop" > "$AUTOSTART_DIR/mpris-lyrics.desktop"
     echo "    [✓] autostart → $AUTOSTART_DIR/mpris-lyrics.desktop"
-    nohup "$BIN_DIR/$PIPE_NAME" "$PIPE_PATH" &>/dev/null &
+    nohup env MPRIS_LYRICS_CHINESE_SCRIPT="$CHINESE_SCRIPT" \
+        "$BIN_DIR/$PIPE_NAME" "$PIPE_PATH" &>/dev/null &
     echo ""
     echo "    🎵 Lyrics pipe started (PID $!)"
     echo "    📁 Output file: $PIPE_PATH"

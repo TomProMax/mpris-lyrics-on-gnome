@@ -98,15 +98,22 @@ def detect_chinese_script():
     ).strip().lower()
     if value in ("simplified", "traditional", "original"):
         return value
-    locale_name = (
-        os.environ.get("LC_ALL")
-        or os.environ.get("LC_CTYPE")
-        or os.environ.get("LANG")
-        or ""
-    ).lower()
-    if locale_name.startswith(("zh_cn", "zh_sg")):
+
+    # A systemd user service often gets LANG from the display manager
+    # (e.g. en_US.UTF-8) while the user's real locale only shows up in
+    # the LC_* variables. Scan all locale variables instead of trusting
+    # LANG alone, otherwise zh_CN lyrics come out in traditional Chinese.
+    names = []
+    for key in ("LC_ALL", "LC_CTYPE", "LANG", "LANGUAGE"):
+        names.append(os.environ.get(key, ""))
+    names.extend(
+        v for k, v in os.environ.items() if k.startswith("LC_")
+    )
+    locale_name = " ".join(n.lower() for n in names if n)
+
+    if "zh_cn" in locale_name or "zh_sg" in locale_name:
         return "simplified"
-    if locale_name.startswith(("zh_tw", "zh_hk", "zh_mo")):
+    if any(tag in locale_name for tag in ("zh_tw", "zh_hk", "zh_mo")):
         return "traditional"
     return "original"
 
