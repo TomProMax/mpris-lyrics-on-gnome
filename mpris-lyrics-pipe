@@ -610,6 +610,20 @@ def compact(text):
     return normalize(text).replace(" ", "")
 
 
+CJK_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def cjk_text(text):
+    """Keep only Han characters.
+
+    Spotify appends English subtitles to some Chinese titles, e.g.
+    "甲乙丙丁Strangers - 粤语版" vs NetEase's "甲乙丙丁 (粤语版)". Comparing
+    the Han-only form keeps those as the same song when one side is
+    bilingual and the other is not.
+    """
+    return "".join(CJK_CHAR_RE.findall(normalize(text)))
+
+
 # --- LRC / YRC parsing ---
 LRC_RE = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 YRC_RE = re.compile(r"^\[(\d+),(\d+)\](.*)$")
@@ -908,6 +922,17 @@ VERSION_CANON = {
     "新版": "new",
     "重制": "new",
     "重制版": "new",
+    "粤语版": "cantonese",
+    "粵語版": "cantonese",
+    "粤语": "cantonese",
+    "粵語": "cantonese",
+    "国语版": "mandarin",
+    "國語版": "mandarin",
+    "国语": "mandarin",
+    "國語": "mandarin",
+    "普通话版": "mandarin",
+    "普通话": "mandarin",
+    "英文版": "english",
     "acoustic": "acoustic",
     "demo": "demo",
     "karaoke": "karaoke",
@@ -1049,14 +1074,18 @@ def score_text_match(
             return 0
 
     query_title_base = normalize(base_title(raw_query_title))
+    query_title_cjk = cjk_text(raw_query_title)
     title_score = 0
     for candidate in candidate_titles:
         candidate_title = normalize(candidate)
         if not candidate_title:
             continue
+        candidate_cjk = cjk_text(candidate)
         if candidate_title == query_title or (
             query_title_base and candidate_title == query_title_base
         ):
+            title_score = max(title_score, 100)
+        elif query_title_cjk and candidate_cjk == query_title_cjk:
             title_score = max(title_score, 100)
         elif query_title and (
             query_title in candidate_title
@@ -1066,6 +1095,11 @@ def score_text_match(
         elif query_title_base and (
             query_title_base in candidate_title
             or candidate_title in query_title_base
+        ):
+            title_score = max(title_score, 60)
+        elif query_title_cjk and candidate_cjk and (
+            query_title_cjk in candidate_cjk
+            or candidate_cjk in query_title_cjk
         ):
             title_score = max(title_score, 60)
 
