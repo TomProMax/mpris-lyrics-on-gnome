@@ -162,7 +162,7 @@ local:
 
 启动时扫描目录内所有 `.lrc` 文件，按文件名中的歌手/歌名匹配。
 
-#### 3.2 在线歌词源
+#### 3.2 网易云音乐（NetEase）
 
 参考开源歌词工具的公开 eapi 请求方式：
 
@@ -204,7 +204,18 @@ AES 实现优先使用 Python 的 `cryptography`，没有时回退到系统 `ope
 - LRC 行数不足时尝试 `yrc.lyric`。
 - 支持一行多个时间戳、`[offset:...]`、空行和元数据行。
 
-#### 3.3 LRCLIB
+#### 3.3 酷狗音乐（Kugou）
+
+免登录公开接口：
+
+- 搜索：`https://songsearch.kugou.com/song_search_v2`
+- 歌词检索：`https://krcs.kugou.com/search`
+- 歌词下载：`https://lyrics.kugou.com/download`（LRC，base64 编码）
+
+NetEase 没收录、或收录了但没有同步歌词的中文歌，通常能在酷狗找到。
+搜索结果里的 `<em>` 高亮标签会先清理，再做歌名/歌手/时长评分。
+
+#### 3.4 LRCLIB
 
 - `https://lrclib.net/api/get?artist_name=...&track_name=...`
 - 失败时使用 `https://lrclib.net/api/search?q=...`

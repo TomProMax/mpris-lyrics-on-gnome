@@ -132,8 +132,9 @@ systemctl --user restart mpris-lyrics.service
 默认参与评分的源：
 
 1. **本地 `.lrc` 文件**（如果配置了 `local.folder`）
-2. **在线歌词源**
-3. **备用在线歌词源**
+2. **网易云音乐（NetEase）**
+3. **酷狗音乐（Kugou）**
+4. **LRCLIB**
 
 每个候选会计算：
 
@@ -149,7 +150,8 @@ total = match + quality + bonus
 Live、Remix 或版本不匹配的歌词。
 
 `MPRIS_LYRICS_SOURCES` 用于选择**参与评分的源**，不是优先级顺序。
-具体可用值见 `mpris-lyrics-pipe` 顶部的 `LYRICS_SOURCES`：
+可用值为 `local`、`netease`、`kugou`、`lrclib`，默认
+`local,netease,kugou,lrclib`：
 
 ```sh
 MPRIS_LYRICS_SOURCES=<source1>,<source2> systemctl --user restart mpris-lyrics.service

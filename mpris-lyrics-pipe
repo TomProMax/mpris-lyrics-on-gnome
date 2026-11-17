@@ -22,8 +22,10 @@ Logs: /tmp/mpris-lyrics.log
 """
 
 import atexit
+import base64
 import bisect
 import hashlib
+import html
 import json
 import os
 import random
@@ -84,7 +86,7 @@ LYRICS_SOURCES = [
     for item in env_first(
         "MPRIS_LYRICS_SOURCES",
         "SPTLRX_LYRICS_SOURCES",
-        default="local,netease,lrclib",
+        default="local,netease,kugou,lrclib",
     ).split(",")
     if item.strip()
 ]
@@ -129,6 +131,16 @@ NETEASE_UA = (
     "Mobile Safari/537.36"
 )
 NETEASE_EAPI_KEY = b"e82ckenh8dichen8"
+
+# --- Kugou Music public endpoints (no account or token required) ---
+KUGOU_SEARCH_URL = "https://songsearch.kugou.com/song_search_v2"
+KUGOU_LYRIC_SEARCH_URL = "https://krcs.kugou.com/search"
+KUGOU_LYRIC_DOWNLOAD_URL = "https://lyrics.kugou.com/download"
+KUGOU_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+KUGOU_REFERER = "https://www.kugou.com/"
 
 LRCLIB_UA = "mpris-lyrics-pipe/1.0 (local MPRIS lyrics bridge)"
 
@@ -701,7 +713,7 @@ def build_local_index(folder):
     return index
 
 
-SOURCE_BONUS = {"local": 10, "netease": 0, "lrclib": 0}
+SOURCE_BONUS = {"local": 10, "netease": 0, "kugou": 0, "lrclib": 0}
 
 
 def lyric_quality_score(lines, length_ms):
@@ -1271,10 +1283,185 @@ def fetch_netease_candidate(artist, title, length_ms):
         return None
 
 
+# --- Kugou Music ---
+def strip_markup(text):
+    text = html.unescape(text or "")
+    return re.sub(r"<[^>]+>", "", text).strip()
+
+
+def kugou_song_title(song):
+    return strip_markup(song.get("SongName") or song.get("song") or "")
+
+
+def kugou_song_artists(song):
+    raw = strip_markup(
+        song.get("SingerName") or song.get("singer") or ""
+    )
+    return [
+        part.strip()
+        for part in re.split(r"[、/&,，]", raw)
+        if part.strip()
+    ]
+
+
+def kugou_song_duration(song):
+    value = song.get("Duration") or song.get("duration") or 0
+    try:
+        value = int(float(value))
+    except (TypeError, ValueError):
+        return 0
+    # Search results use seconds; lyric search uses milliseconds.
+    return value * 1000 if value < 100000 else value
+
+
+def kugou_search(query, limit=10, page=1):
+    params = urllib.parse.urlencode(
+        {
+            "keyword": query,
+            "page": str(page),
+            "pagesize": str(limit),
+            "platform": "WebFilter",
+            "tag": "em",
+            "sver": "2",
+            "from": "0",
+        }
+    )
+    data = http_json(
+        f"{KUGOU_SEARCH_URL}?{params}",
+        headers={"User-Agent": KUGOU_UA, "Referer": KUGOU_REFERER},
+    )
+    return ((data.get("data") or {}).get("lists") or [])
+
+
+def kugou_pick_song(songs, artist, title, length_ms):
+    query_title = normalize(title)
+    query_artist = normalize(artist)
+    best = None
+    best_score = 0
+    for song in songs:
+        score = score_text_match(
+            query_title,
+            query_artist,
+            [kugou_song_title(song)],
+            kugou_song_artists(song),
+            kugou_song_duration(song),
+            length_ms,
+            title,
+        )
+        if score > best_score:
+            best = song
+            best_score = score
+    return best, best_score
+
+
+def kugou_lyric(song_hash, keyword, length_ms):
+    params = urllib.parse.urlencode(
+        {
+            "ver": "1",
+            "man": "yes",
+            "client": "mobi",
+            "keyword": keyword,
+            "duration": str(length_ms or 0),
+            "hash": song_hash.lower(),
+        }
+    )
+    data = http_json(
+        f"{KUGOU_LYRIC_SEARCH_URL}?{params}",
+        headers={"User-Agent": KUGOU_UA, "Referer": KUGOU_REFERER},
+    )
+    candidates = data.get("candidates") or []
+    if not candidates:
+        return ""
+    wanted = length_ms or 0
+    pick = min(
+        candidates,
+        key=lambda item: (
+            abs(kugou_song_duration(item) - wanted) if wanted else 0
+        ),
+    )
+    params = urllib.parse.urlencode(
+        {
+            "ver": "1",
+            "client": "pc",
+            "id": pick.get("id"),
+            "accesskey": pick.get("accesskey"),
+            "fmt": "lrc",
+            "charset": "utf8",
+        }
+    )
+    data = http_json(
+        f"{KUGOU_LYRIC_DOWNLOAD_URL}?{params}",
+        headers={"User-Agent": KUGOU_UA, "Referer": KUGOU_REFERER},
+    )
+    content = data.get("content") or ""
+    if not content:
+        return ""
+    try:
+        return base64.b64decode(content).decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def fetch_kugou_candidate(artist, title, length_ms):
+    query = f"{artist} {title}".strip()
+    if not query:
+        return None
+
+    try:
+        search_queries = [search_text(query)]
+        title_query = search_text(title)
+        if title_query and title_query not in search_queries:
+            search_queries.append(title_query)
+
+        song = None
+        score = 0
+        found_results = False
+        for search_query in search_queries:
+            for page in (1, 2):
+                songs = kugou_search(search_query, page=page)
+                if not songs:
+                    break
+                found_results = True
+                song, score = kugou_pick_song(
+                    songs, artist, title, length_ms
+                )
+                if song:
+                    break
+            if song:
+                break
+
+        if not song:
+            reason = (
+                "no search results"
+                if not found_results
+                else "no suitable match"
+            )
+            log(f"Kugou: {reason} for {query!r}")
+            return None
+
+        song_hash = song.get("FileHash") or song.get("hash")
+        if not song_hash:
+            log(f"Kugou: no file hash for {query!r}")
+            return None
+
+        lyric = kugou_lyric(song_hash, query, length_ms)
+        lines = parse_lyrics(lyric)
+        if len(lines) < 2:
+            log(f"Kugou: no synced lyrics for {kugou_song_title(song)!r}")
+            return None
+
+        names = " / ".join(kugou_song_artists(song))
+        detail = f"{kugou_song_title(song)} - {names}"
+        return build_candidate("kugou", lines, score, detail, length_ms)
+    except Exception as e:
+        log(f"Kugou error: {type(e).__name__}: {e}")
+        return None
+
+
 # --- LRCLIB ---
-def http_json(url, timeout=10):
+def http_json(url, timeout=10, headers=None):
     request = urllib.request.Request(
-        url, headers={"User-Agent": LRCLIB_UA}
+        url, headers=headers or {"User-Agent": LRCLIB_UA}
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -1386,6 +1573,8 @@ def fetch_lyrics(artist, title, length_ms, local_index):
             )
         elif source == "netease":
             candidate = fetch_netease_candidate(artist, title, length_ms)
+        elif source == "kugou":
+            candidate = fetch_kugou_candidate(artist, title, length_ms)
         elif source == "lrclib":
             candidate = fetch_lrclib_candidate(artist, title, length_ms)
         else:
