@@ -600,6 +600,16 @@ def normalize(text):
     return " ".join(text.split())
 
 
+def compact(text):
+    """Normalized text with every space removed.
+
+    Streaming metadata often joins CJK and Latin names differently from
+    the lyrics database: "en王翊恩" vs "en (王翊恩)", or "XMASwu吴骜" vs
+    "XMASwu(吴骜)". Dropping spaces lets those count as the same artist.
+    """
+    return normalize(text).replace(" ", "")
+
+
 # --- LRC / YRC parsing ---
 LRC_RE = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 YRC_RE = re.compile(r"^\[(\d+),(\d+)\](.*)$")
@@ -965,6 +975,40 @@ def version_tokens(text):
     return tokens
 
 
+COVER_ARTIST_RE = re.compile(
+    r"(?:cover|翻唱|翻自)\s*[:：]?\s*([^()（）\[\]【】]+)",
+    re.IGNORECASE,
+)
+
+TITLE_BRACKET_RE = re.compile(r"[(\[（【]([^)\]）】]*)[)\]）】]")
+
+
+def base_title(text):
+    """Title with bracketed version markers removed.
+
+    '蠢货 (cover: 喻言)' -> '蠢货', 'Song (Live)' -> 'Song'.
+    """
+    text = unicodedata.normalize("NFKC", text or "")
+
+    def repl(match):
+        return " " if _version_words_in(match.group(1)) else match.group(0)
+
+    return TITLE_BRACKET_RE.sub(repl, text)
+
+
+def cover_artists(title):
+    """Artists named inside a cover title, e.g. 'Song (cover: 喻言)'."""
+    names = []
+    for match in COVER_ARTIST_RE.finditer(
+        unicodedata.normalize("NFKC", title or "")
+    ):
+        for part in re.split(r"[/、,，&+]", match.group(1)):
+            part = part.strip()
+            if part:
+                names.append(part)
+    return names
+
+
 def netease_song_titles(song):
     titles = [song.get("name", "")]
     for key in ("alia", "tns", "alias"):
@@ -993,19 +1037,35 @@ def score_text_match(
     primary_title = candidate_titles[0] if candidate_titles else ""
     if not primary_title:
         return 0
-    if version_tokens(primary_title) != version_tokens(raw_query_title):
-        return 0
+    query_versions = version_tokens(raw_query_title)
+    candidate_versions = version_tokens(primary_title)
+    if candidate_versions != query_versions:
+        # A cover title names its source artist. The original release has
+        # no version marker, but its lyrics are exactly what a cover uses.
+        if not (
+            "cover" in query_versions
+            and candidate_versions <= {"cover"}
+        ):
+            return 0
 
+    query_title_base = normalize(base_title(raw_query_title))
     title_score = 0
     for candidate in candidate_titles:
         candidate_title = normalize(candidate)
         if not candidate_title:
             continue
-        if candidate_title == query_title:
+        if candidate_title == query_title or (
+            query_title_base and candidate_title == query_title_base
+        ):
             title_score = max(title_score, 100)
         elif query_title and (
             query_title in candidate_title
             or candidate_title in query_title
+        ):
+            title_score = max(title_score, 60)
+        elif query_title_base and (
+            query_title_base in candidate_title
+            or candidate_title in query_title_base
         ):
             title_score = max(title_score, 60)
 
@@ -1015,13 +1075,20 @@ def score_text_match(
         return 0
 
     artist_score = 0
+    query_artist_compact = query_artist.replace(" ", "")
     for name in candidate_artists:
         name = normalize(name)
         if not name or not query_artist:
             continue
-        if name == query_artist:
+        name_compact = name.replace(" ", "")
+        if name == query_artist or name_compact == query_artist_compact:
             artist_score = max(artist_score, 100)
-        elif name in query_artist or query_artist in name:
+        elif (
+            name in query_artist
+            or query_artist in name
+            or name_compact in query_artist_compact
+            or query_artist_compact in name_compact
+        ):
             artist_score = max(artist_score, 60)
 
     duration_score = 0
@@ -1036,8 +1103,19 @@ def score_text_match(
         else:
             duration_score = -60
 
-    # Require an artist match; this rejects same-title covers.
+    # Require an artist match; this rejects same-title covers. A cover can
+    # still borrow the original's lyrics when the title names the original
+    # artist ("蠢货 (cover: 喻言)") and the duration is close.
     if query_artist:
+        if artist_score < 60 and duration_score >= 10:
+            wanted = {
+                compact(name) for name in cover_artists(raw_query_title)
+            }
+            if wanted:
+                for name in candidate_artists:
+                    if compact(name) in wanted:
+                        artist_score = 60
+                        break
         if artist_score < 60:
             return 0
     else:
@@ -1107,26 +1185,40 @@ def fetch_netease_candidate(artist, title, length_ms):
         return None
 
     try:
-        search_query = search_text(query)
-        songs = netease_search(search_query, limit=50, offset=0)
-        if not songs and artist:
-            search_query = search_text(title)
-            songs = netease_search(search_query, limit=50, offset=0)
-        if not songs:
-            log(f"NetEase: no search results for {query!r}")
-            return None
+        search_queries = [search_text(query)]
+        title_query = search_text(title)
+        if title_query and title_query not in search_queries:
+            search_queries.append(title_query)
 
-        song, score = netease_pick_song(songs, artist, title, length_ms)
-        if not song:
+        song = None
+        score = 0
+        found_results = False
+        for search_query in search_queries:
+            songs = netease_search(search_query, limit=50, offset=0)
+            if not songs:
+                continue
+            found_results = True
+            song, score = netease_pick_song(
+                songs, artist, title, length_ms
+            )
+            if song:
+                break
             # The exact track is sometimes buried under many covers.
             more = netease_search(search_query, limit=50, offset=50)
             if more:
-                songs += more
                 song, score = netease_pick_song(
-                    songs, artist, title, length_ms
+                    songs + more, artist, title, length_ms
                 )
+                if song:
+                    break
+
         if not song:
-            log(f"NetEase: no suitable match for {query!r}")
+            reason = (
+                "no search results"
+                if not found_results
+                else "no suitable match"
+            )
+            log(f"NetEase: {reason} for {query!r}")
             return None
 
         lrc, yrc = netease_lyrics(song["id"])
@@ -1212,24 +1304,33 @@ def fetch_lrclib_candidate(artist, title, length_ms):
     except Exception as e:
         log(f"LRCLIB get error: {type(e).__name__}: {e}")
 
-    query = f"{artist_query} {title_query}".strip()
-    search_url = (
-        "https://lrclib.net/api/search?"
-        + urllib.parse.urlencode({"q": query})
-    )
-    for attempt in range(2):
-        try:
-            results = http_json(search_url)
-            for track in results or []:
-                add_lrclib_candidate(
-                    candidates, track, artist, title, length_ms
-                )
+    search_queries = []
+    combined = f"{artist_query} {title_query}".strip()
+    if combined:
+        search_queries.append(combined)
+    if title_query and title_query not in search_queries:
+        search_queries.append(title_query)
+
+    for query in search_queries:
+        search_url = (
+            "https://lrclib.net/api/search?"
+            + urllib.parse.urlencode({"q": query})
+        )
+        for attempt in range(2):
+            try:
+                results = http_json(search_url)
+                for track in results or []:
+                    add_lrclib_candidate(
+                        candidates, track, artist, title, length_ms
+                    )
+                break
+            except Exception as e:
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+                log(f"LRCLIB search error: {type(e).__name__}: {e}")
+        if candidates:
             break
-        except Exception as e:
-            if attempt == 0:
-                time.sleep(0.5)
-                continue
-            log(f"LRCLIB search error: {type(e).__name__}: {e}")
 
     if not candidates:
         return None
