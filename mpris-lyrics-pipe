@@ -452,6 +452,38 @@ def gv_first_match(match):
     return match.group(1) if match.group(1) is not None else match.group(2)
 
 
+# Some players expose invisible Unicode as literal escape text, e.g.
+# xesam:title == "\\u20601994" instead of U+2060 followed by "1994".
+_LITERAL_UNICODE_ESCAPE_RE = re.compile(
+    r"\\u([0-9a-fA-F]{4})|\\U([0-9a-fA-F]{8})"
+)
+_INVISIBLE_CHARS_RE = re.compile(
+    "[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e"
+    "\u2060-\u2064\u2066-\u206f\ufeff]"
+)
+
+
+def clean_metadata_text(text):
+    """Decode literal \\uXXXX text and drop invisible format characters.
+
+    Streaming metadata sometimes prefixes a title with U+2060 WORD JOINER
+    to keep duplicate releases apart. If the player serializes it as the
+    six characters "\\u2060", the title no longer matches any lyrics
+    database, so decode and remove those characters before matching.
+    """
+    text = text or ""
+
+    def unescape(match):
+        code = int(match.group(1) or match.group(2), 16)
+        if 0xD800 <= code <= 0xDFFF or code > 0x10FFFF:
+            return ""
+        return chr(code)
+
+    text = _LITERAL_UNICODE_ESCAPE_RE.sub(unescape, text)
+    text = _INVISIBLE_CHARS_RE.sub("", text)
+    return text.strip()
+
+
 def get_player_state(bus_name):
     """
     Return a dict with status, metadata, position and duration for a player.
@@ -496,11 +528,15 @@ def get_player_state(bus_name):
     )
     position_match = re.search(r"'Position': <u?int64 (-?\d+)>", out)
 
-    title = gv_first_match(title_match) if title_match else ""
+    title = (
+        clean_metadata_text(gv_first_match(title_match))
+        if title_match
+        else ""
+    )
     artist = ""
     if artist_match:
         artist = " ".join(
-            gv_first_match(m)
+            clean_metadata_text(gv_first_match(m))
             for m in re.finditer(GV_STRING, artist_match.group(1))
         )
     else:
@@ -508,7 +544,7 @@ def get_player_state(bus_name):
             r"'xesam:artist': <" + GV_STRING + ">", out
         )
         if artist_match:
-            artist = gv_first_match(artist_match)
+            artist = clean_metadata_text(gv_first_match(artist_match))
 
     length_us = int(length_match.group(1)) if length_match else 0
     trackid = trackid_match.group(1) if trackid_match else ""
