@@ -790,7 +790,81 @@ def lyric_quality_score(lines, length_ms):
     return line_score + coverage + density_score
 
 
+CREDIT_ROLES_ZH = (
+    "作词", "作曲", "词曲", "编曲", "制作人", "制作协力", "制作团队",
+    "制作", "监制", "出品人", "出品", "发行", "演唱", "原唱", "翻唱",
+    "录音", "混音", "母带", "和声", "吉他", "贝斯", "弦乐", "键盘",
+    "钢琴", "配唱", "统筹", "企划", "策划", "宣发", "宣传", "推广",
+    "版权", "著作权", "授权", "商用授权", "导演", "音乐总监",
+    "艺术总监", "未经许可", "未经授权", "版权所有", "发行公司",
+    "唱片公司", "音乐制作", "录音室", "录音棚", "出品公司",
+    "副歌", "主歌", "间奏", "前奏", "尾奏",
+)
+
+CREDIT_ROLES_EN = (
+    "lyric", "lyrics", "composer", "composed", "arranger", "arranged",
+    "producer", "produced", "mixing", "mixed", "mastering", "mastered",
+    "recording", "recorded", "vocal", "vocals", "guitar", "bass", "drum",
+    "drums", "piano", "string", "strings", "keyboard", "written",
+    "performed", "label", "publisher", "publishing", "copyright", "op",
+    "sp", "verse", "chorus", "bridge", "intro", "outro", "hook",
+)
+
+
+def is_credit_line(text):
+    """True for production credits, not actual lyric lines.
+
+    Kugou/NetEase LRCs often start with timed lines such as
+    "作词：万泽", "出品：炽热星球" or "Produced by: ...". Showing those
+    in the top bar looks like the lyrics are broken.
+    """
+    norm = unicodedata.normalize("NFKC", text or "").strip().lower()
+    if not norm:
+        return False
+
+    plain = norm.strip("[]()（）【】 \t")
+    if re.search(r"未经.{0,20}(许可|授权|著作权)", plain):
+        return True
+    if plain.startswith(("版权所有", "©", "℗")):
+        return True
+
+    if ":" not in norm:
+        return False
+
+    head = norm.split(":", 1)[0]
+    head = re.sub(r"[\[\]()（）【】]", " ", head).strip()
+    if not head or len(head) > 40:
+        return False
+
+    if head in ("词", "曲", "词曲"):
+        return True
+
+    if any(role in head for role in CREDIT_ROLES_ZH):
+        return True
+
+    return any(
+        re.search(rf"\b{role}\b", head) for role in CREDIT_ROLES_EN
+    )
+
+
+def strip_credit_lines(lines, detail=""):
+    detail_key = normalize((detail or "").replace(" - ", " "))
+    title_key = normalize((detail or "").split(" - ", 1)[0])
+    cleaned = []
+    for timestamp, text in lines:
+        if is_credit_line(text):
+            continue
+        text_key = normalize(text)
+        if detail_key and text_key == detail_key:
+            continue
+        if timestamp <= 3000 and title_key and text_key == title_key:
+            continue
+        cleaned.append((timestamp, text))
+    return cleaned
+
+
 def build_candidate(source, lines, match_score, detail, length_ms):
+    lines = strip_credit_lines(lines, detail)
     quality = lyric_quality_score(lines, length_ms)
     if quality < 30:
         return None
