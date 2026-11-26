@@ -275,8 +275,10 @@ if [ "$USE_SYSTEMD" -eq 1 ]; then
     cat > "$UNIT_FILE" <<EOF
 [Unit]
 Description=MPRIS lyrics pipe (local MPRIS)
+# Order after the graphical session, but do NOT use PartOf= here: switching
+# between X11 and Wayland restarts graphical-session.target, and PartOf would
+# stop this service with it while nothing starts it again.
 After=graphical-session.target
-PartOf=graphical-session.target
 
 [Service]
 Type=simple
